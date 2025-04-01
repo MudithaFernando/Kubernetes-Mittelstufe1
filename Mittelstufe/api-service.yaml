@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: notiz-api
+  namespace: meine-app
+spec:
+  selector:
+    app: notiz-api
+  ports:
+  - port: 80
+    targetPort: 3000
+  type: ClusterIP

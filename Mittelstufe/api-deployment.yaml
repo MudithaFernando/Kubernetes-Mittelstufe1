@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notiz-api
+  namespace: meine-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: notiz-api
+  template:
+    metadata:
+      labels:
+        app: notiz-api
+    spec:
+      containers:
+      - name: api
+        image: node:14-alpine
+        ports:
+        - containerPort: 3000
+        env:
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: user-password
+        volumeMounts:
+        - name: api-config-volume
+          mountPath: /app/config
+        - name: app-volume
+          mountPath: /app
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          cat > /app/server.js << 'EOF'
+          const express = require('express');
+          const mysql = require('mysql2/promise');
+          const config = require('./config/config');
+          
+          const app = express();
+          app.use(express.json());
+          
+          // Datenbankverbindung
+          const dbConfig = {
+            host: config.database.host,
+            port: config.database.port,
+            database: config.database.database,
+            user: config.database.user,
+            password: process.env.DB_PASSWORD
+          };
+          
+          // GET /api/notizen - Alle Notizen abrufen
+          app.get('/api/notizen', async (req, res) => {
+            try {
+              const connection = await mysql.createConnection(dbConfig);
+              const [rows] = await connection.execute('SELECT * FROM notizen');
+              await connection.end();
+              res.json(rows);
+            } catch (error) {
+              console.error('Fehler beim Abrufen der Notizen:', error);
+              res.status(500).json({ error: 'Datenbankfehler' });
+            }
+          });
+          
+          // GET /api/notizen/:id - Eine Notiz abrufen
+          app.get('/api/notizen/:id', async (req, res) => {
+            try {
+              const connection = await mysql.createConnection(dbConfig);
+              const [rows] = await connection.execute('SELECT * FROM notizen WHERE id = ?', [req.params.id]);
+              await connection.end();
+              
+              if (rows.length === 0) {
+                return res.status(404).json({ error: 'Notiz nicht gefunden' });
+              }
+              
+              res.json(rows[0]);
+            } catch (error) {
+              console.error('Fehler beim Abrufen der Notiz:', error);
+              res.status(500).json({ error: 'Datenbankfehler' });
+            }
+          });
+          
+          // POST /api/notizen - Neue Notiz erstellen
+          app.post('/api/notizen', async (req, res) => {
+            const { titel, inhalt } = req.body;
+            
+            if (!titel) {
+              return res.status(400).json({ error: 'Titel ist erforderlich' });
+            }
+            
+            try {
+              const connection = await mysql.createConnection(dbConfig);
+              const [result] = await connection.execute(
+                'INSERT INTO notizen (titel, inhalt) VALUES (?, ?)',
+                [titel, inhalt || '']
+              );
+              await connection.end();
+              
+              res.status(201).json({ 
+                id: result.insertId,
+                titel,
+                inhalt,
+                message: 'Notiz erstellt' 
+              });
+            } catch (error) {
+              console.error('Fehler beim Erstellen der Notiz:', error);
+              res.status(500).json({ error: 'Datenbankfehler' });
+            }
+          });
+          
+          // Gesundheitscheck
+          app.get('/health', (req, res) => {
+            res.json({ status: 'UP' });
+          });
+          
+          // Server starten
+          const port = config.port || 3000;
+          app.listen(port, () => {
+            console.log(`API-Server läuft auf Port ${port}`);
+          });
+          EOF
+          
+          cd /app && npm init -y && 
+          npm install express mysql2 &&
+          node server.js
+        resources:
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 20
+          periodSeconds: 15
+      volumes:
+      - name: api-config-volume
+        configMap:
+          name: api-config
+      - name: app-volume
+        emptyDir: {}
